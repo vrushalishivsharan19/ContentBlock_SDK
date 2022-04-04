@@ -1,0 +1,131 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "SFMC Template Composer Lambda and API Gateway"
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Environment of the lambda.
+    Default: sandbox
+    AllowedValues: [ sandbox ]
+
+  ApiGatewayName:
+    Type: String
+    AllowedPattern: "[a-z0-9]+"
+    Default: sfmctemplatecomposer
+
+  ApiGatewayStageName:
+    Type: String
+    AllowedPattern: "[a-z0-9]+"
+    Default: latest
+
+  TerminusUri:
+    Type: String
+    Default: https://api-staging.abc.net.au/terminus/graphql/query
+
+Resources:
+
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Ref ApiGatewayName
+      Description: REST API for SFMC Template Composer POC
+
+  ApiGatewayMethodRoot:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      ApiKeyRequired: false
+      AuthorizationType: NONE
+      HttpMethod: GET
+      ResourceId: !GetAtt ApiGateway.RootResourceId
+      RestApiId: !Ref ApiGateway
+      Integration:
+        "Type": "MOCK"
+
+  ApiGatewayMethodTemplate:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      ApiKeyRequired: false
+      AuthorizationType: NONE
+      HttpMethod: GET
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+          - LambdaArn: !GetAtt LambdaFunction.Arn
+      ResourceId: !Ref ApiGatewayResource
+      RestApiId: !Ref ApiGateway
+      RequestParameters:
+        method.request.querystring.cliendid: true
+        method.request.path.collectionid: true
+
+  ApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: "{collectionid}"
+      RestApiId: !Ref ApiGateway
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - ApiGatewayMethodTemplate
+    Properties:
+      RestApiId: !Ref ApiGateway
+      StageName: !Ref ApiGatewayStageName
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          LOG_LEVEL: debug
+          REGION: !Ref AWS::Region
+          # Secrets
+          TERMINUS_KEY: !Sub '{{resolve:secretsmanager:emailplatforms:SecretString:staging/terminuskey}}'
+          CLIENTID: !Sub '{{resolve:secretsmanager:emailplatforms:SecretString:staging/clientid}}'
+          # Environment variables
+          TERMINUS_URL: !Ref TerminusUri
+      FunctionName: !Sub sfmc-template-composer-${Environment}
+      Role: !GetAtt IamRole.Arn
+      Runtime: nodejs14.x
+      Handler: index.handler
+      Code: dist/
+
+  LambdaApiGatewayInvoke:
+    Type: AWS::Lambda::Permission
+    Properties: 
+      Action: "lambda:InvokeFunction"
+      FunctionName: !Ref "LambdaFunction"
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/GET/*
+
+  IamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+Outputs:
+  Lambda:
+    Value: !Ref LambdaFunction
+    Export:
+      Name: !Sub ${AWS::StackName}-lambda
+
+  LambdaArn:
+    Value: !GetAtt LambdaFunction.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-lambda-arn
+
+  apiGatewayInvokeURL:
+    Value: !Sub https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${ApiGatewayStageName}

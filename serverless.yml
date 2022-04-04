@@ -1,0 +1,14 @@
+service: sfmc-template-composer
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: nodejs14.x
+
+functions:
+  template:
+    handler: dist/index.handler
+    events:
+      - httpApi:
+          path: /template
+          method: get
